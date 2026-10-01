@@ -1,0 +1,10 @@
+vendor/
+composer.lock
+.phpunit.cache
+.phpunit.result.cache
+*.log
+.DS_Store
+Thumbs.db
+traffic.json
+traffic_*.json
+output/

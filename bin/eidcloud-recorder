@@ -1,0 +1,237 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+// Register zero-dependency PSR-4 autoloader for EidCloud\HttpRecorder\
+spl_autoload_register(function (string $class) {
+    $prefix = 'EidCloud\\HttpRecorder\\';
+    $baseDir = dirname(__DIR__) . '/src/';
+
+    $len = strlen($prefix);
+    if (strncmp($prefix, $class, $len) !== 0) {
+        return;
+    }
+
+    $relativeClass = substr($class, $len);
+    $file = $baseDir . str_replace('\\', '/', $relativeClass) . '.php';
+
+    if (file_exists($file)) {
+        require_once $file;
+    }
+});
+
+use EidCloud\HttpRecorder\HttpRecorder;
+use EidCloud\HttpRecorder\Proxy\ProxyServer;
+
+function showHelp(): void
+{
+    echo <<<HELP
+\033[1;34m📼 EidCloud HTTP Recorder CLI\033[0m
+Zero-dependency HTTP traffic recorder, replayer, and test suite synthesizer.
+
+\033[1;33mUSAGE:\033[0m
+  php bin/eidcloud-recorder <command> [options]
+
+\033[1;33mCOMMANDS:\033[0m
+  \033[32mrecord\033[0m          Start HTTP proxy server to intercept and record traffic
+  \033[32mreplay\033[0m          Replay recorded traffic against original or custom target
+  \033[32mexport-tests\033[0m    Generate PHPUnit tests, Pest tests, cURL scripts, and OpenAPI spec
+  \033[32mscrub\033[0m           Sanitize and scrub existing traffic JSON file
+  \033[32mstats\033[0m           Display summary statistics of recorded session
+
+\033[1;33mOPTIONS FOR record:\033[0m
+  --port=<port>       Proxy listening port (default: 8888)
+  --host=<host>       Proxy host address (default: 127.0.0.1)
+  --target=<url>      Optional target server for reverse proxy mode
+  --out=<file>        Output JSON file for recorded session (default: traffic.json)
+  --max=<n>           Stop recording automatically after <n> requests
+
+\033[1;33mOPTIONS FOR replay:\033[0m
+  <file>              Path to recorded traffic JSON file
+  --target=<url>      Override target base URL (e.g. http://localhost:8000)
+  --latency           Simulate recorded request timings and delays
+  --speed=<num>       Speed multiplier for latency playback (default: 1.0)
+
+\033[1;33mOPTIONS FOR export-tests:\033[0m
+  <file>              Path to recorded traffic JSON file
+  --out=<dir>         Output directory for generated tests (default: ./tests/Generated)
+  --spec              Also synthesize openapi.json 3.1 specification
+
+\033[1;33mGLOBAL OPTIONS:\033[0m
+  -h, --help          Show this help message
+
+\033[1;33mEXAMPLES:\033[0m
+  php bin/eidcloud-recorder record --port=8888 --out=traffic.json
+  php bin/eidcloud-recorder record --port=8080 --target=https://api.example.com --out=traffic.json
+  php bin/eidcloud-recorder replay traffic.json --target=http://localhost:8000
+  php bin/eidcloud-recorder export-tests traffic.json --out=./tests/Generated/
+
+HELP;
+}
+
+$args = array_slice($argv, 1);
+
+if (empty($args) || in_array('-h', $args, true) || in_array('--help', $args, true)) {
+    showHelp();
+    exit(0);
+}
+
+$command = array_shift($args);
+
+$options = [];
+$positional = [];
+
+foreach ($args as $arg) {
+    if (str_starts_with($arg, '--')) {
+        $clean = substr($arg, 2);
+        if (str_contains($clean, '=')) {
+            [$key, $val] = explode('=', $clean, 2);
+            $options[$key] = $val;
+        } else {
+            $options[$clean] = true;
+        }
+    } else {
+        $positional[] = $arg;
+    }
+}
+
+switch ($command) {
+    case 'record':
+        $port = isset($options['port']) ? (int)$options['port'] : 8888;
+        $host = (string)($options['host'] ?? '127.0.0.1');
+        $outFile = (string)($options['out'] ?? 'traffic.json');
+        $target = isset($options['target']) ? (string)$options['target'] : null;
+        $max = isset($options['max']) ? (int)$options['max'] : null;
+
+        $recorder = new HttpRecorder($outFile, autoScrub: true);
+        $proxy = new ProxyServer($recorder, host: $host, port: $port, targetBaseUri: $target);
+
+        echo "\033[1;32m[RECORDING STARTED]\033[0m Intercepted traffic will be saved to: {$outFile}\n";
+        echo "Configure your client proxy to http://{$host}:{$port}\n";
+        echo "Press Ctrl+C to terminate recording.\n\n";
+
+        $proxy->start(maxRequests: $max);
+        echo "\n\033[1;32m[RECORDING COMPLETE]\033[0m Recorded {$recorder->count()} requests.\n";
+        break;
+
+    case 'replay':
+        $file = $positional[0] ?? ($options['file'] ?? 'traffic.json');
+        if (!file_exists($file)) {
+            fwrite(STDERR, "\033[1;31mError:\033[0m File not found: {$file}\n");
+            exit(1);
+        }
+
+        $target = isset($options['target']) ? (string)$options['target'] : null;
+        $latency = isset($options['latency']);
+        $speed = isset($options['speed']) ? (float)$options['speed'] : 1.0;
+
+        $recorder = new HttpRecorder($file);
+        echo "\033[1;34m[REPLAY ENGINE]\033[0m Loaded {$recorder->count()} interactions from {$file}\n";
+        if ($target) {
+            echo "Target destination redirect: {$target}\n";
+        }
+        echo "Preserve Latency: " . ($latency ? "YES ({$speed}x speed)" : "NO") . "\n\n";
+
+        $replayer = $recorder->getReplayEngine(
+            targetOverride: $target,
+            preserveLatency: $latency,
+            speedMultiplier: $speed
+        );
+
+        $results = $replayer->replay(function ($current, $total, $entry) {
+            $status = $entry['replayedStatus'];
+            $color = $entry['success'] ? "\033[32m" : "\033[31m";
+            $interaction = $entry['interaction'];
+            echo sprintf(
+                "[%d/%d] %s %s -> {$color}HTTP %d\033[0m (%.2f ms)\n",
+                $current,
+                $total,
+                $interaction->method,
+                $interaction->uri,
+                $status,
+                $entry['durationMs']
+            );
+        });
+
+        $successCount = count(array_filter($results, fn($r) => $r['success']));
+        echo sprintf("\nReplay finished: %d succeeded, %d failed.\n", $successCount, count($results) - $successCount);
+        break;
+
+    case 'export-tests':
+        $file = $positional[0] ?? ($options['file'] ?? 'traffic.json');
+        if (!file_exists($file)) {
+            fwrite(STDERR, "\033[1;31mError:\033[0m File not found: {$file}\n");
+            exit(1);
+        }
+
+        $outDir = rtrim((string)($options['out'] ?? './tests/Generated'), '/\\');
+        if (!is_dir($outDir)) {
+            mkdir($outDir, 0777, true);
+        }
+
+        $recorder = new HttpRecorder($file);
+        $generator = $recorder->getTestGenerator();
+
+        // 1. PHPUnit
+        $phpunitCode = $generator->generatePhpUnit();
+        file_put_contents("{$outDir}/RecordedTrafficTest.php", $phpunitCode);
+        echo "\033[32m✔ Generated PHPUnit Test Class:\033[0m {$outDir}/RecordedTrafficTest.php\n";
+
+        // 2. Pest PHP
+        $pestCode = $generator->generatePest();
+        file_put_contents("{$outDir}/RecordedTrafficPestTest.php", $pestCode);
+        echo "\033[32m✔ Generated Pest Test Suite:\033[0m {$outDir}/RecordedTrafficPestTest.php\n";
+
+        // 3. Executable cURL Test Runner
+        $curlScript = $generator->generateExecutableCurlScript();
+        file_put_contents("{$outDir}/run_curl_test.php", $curlScript);
+        echo "\033[32m✔ Generated Standalone cURL Runner:\033[0m {$outDir}/run_curl_test.php\n";
+
+        // 4. OpenAPI 3.1 Spec
+        $spec = $generator->generateOpenApiSpec();
+        file_put_contents("{$outDir}/openapi.json", json_encode($spec, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        echo "\033[32m✔ Synthesized OpenAPI 3.1 Specification:\033[0m {$outDir}/openapi.json\n";
+
+        echo "\n\033[1;32mExport successfully completed!\033[0m\n";
+        break;
+
+    case 'stats':
+        $file = $positional[0] ?? ($options['file'] ?? 'traffic.json');
+        if (!file_exists($file)) {
+            fwrite(STDERR, "File not found: {$file}\n");
+            exit(1);
+        }
+        $recorder = new HttpRecorder($file);
+        $interactions = $recorder->getInteractions();
+
+        $methods = [];
+        $statusCodes = [];
+        $totalDuration = 0;
+
+        foreach ($interactions as $i) {
+            $methods[$i->method] = ($methods[$i->method] ?? 0) + 1;
+            $statusCodes[$i->statusCode] = ($statusCodes[$i->statusCode] ?? 0) + 1;
+            $totalDuration += $i->durationMs;
+        }
+
+        echo "\n📊 Traffic Session Stats for [{$file}]\n";
+        echo "----------------------------------------\n";
+        echo "Total Requests: " . count($interactions) . "\n";
+        echo "Total Duration: " . round($totalDuration, 2) . " ms\n";
+        echo "Methods:\n";
+        foreach ($methods as $m => $c) {
+            echo "  - {$m}: {$c}\n";
+        }
+        echo "Status Codes:\n";
+        foreach ($statusCodes as $s => $c) {
+            echo "  - {$s}: {$c}\n";
+        }
+        echo "----------------------------------------\n\n";
+        break;
+
+    default:
+        fwrite(STDERR, "Unknown command: {$command}\n");
+        showHelp();
+        exit(1);
+}

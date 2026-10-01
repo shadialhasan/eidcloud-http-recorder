@@ -1,0 +1,12 @@
+{
+  "description": "Lightweight HTTP traffic recorder, replay engine, and automated mock/test synthesizer in pure PHP",
+  "topics": [
+    "eidcloud",
+    "http-recorder",
+    "traffic-replay",
+    "mock-generator",
+    "api-testing",
+    "reverse-proxy",
+    "php8"
+  ]
+}

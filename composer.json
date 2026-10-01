@@ -1,0 +1,28 @@
+{
+  "name": "eidcloud/http-recorder",
+  "description": "Lightweight HTTP traffic recorder, replay engine, and automated mock/test synthesizer in pure PHP",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "MHD. Shadi AL-Hasan",
+      "role": "Author & Maintainer"
+    }
+  ],
+  "require": {
+    "php": ">=8.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "EidCloud\\HttpRecorder\\": "src/"
+    }
+  },
+  "bin": [
+    "bin/eidcloud-recorder"
+  ],
+  "scripts": {
+    "test": "php tests/run_tests.php"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}
